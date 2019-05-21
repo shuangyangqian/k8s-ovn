@@ -22,10 +22,6 @@ import:
   version: v1.1.0
 - package: github.com/gorilla/mux
   version: v1.7.2
-- package: github.com/openvswitch/ovn-kubernetes
-  version: v0.3.11
-  subpackages:
-  - go-controller/pkg/config
 - package: github.com/sirupsen/logrus
   version: v1.4.2
 - package: github.com/urfave/cli
