@@ -1,0 +1,77 @@
+package: github.com/shuangyangqian/k8s-ovn
+import:
+- package: github.com/Sirupsen/logrus
+  version: v1.4.2
+- package: github.com/containernetworking/cni
+  version: v0.7.0
+  subpackages:
+  - pkg/skel
+  - pkg/types
+  - pkg/types/current
+  - pkg/version
+- package: github.com/containernetworking/plugins
+  version: v0.8.0
+  subpackages:
+  - pkg/ip
+  - pkg/ns
+- package: github.com/coreos/go-iptables
+  version: v0.4.1
+  subpackages:
+  - iptables
+- package: github.com/eapache/channels
+  version: v1.1.0
+- package: github.com/gorilla/mux
+  version: v1.7.2
+- package: github.com/openvswitch/ovn-kubernetes
+  version: v0.3.11
+  subpackages:
+  - go-controller/pkg/config
+- package: github.com/sirupsen/logrus
+  version: v1.4.2
+- package: github.com/urfave/cli
+  version: v1.20.0
+- package: github.com/vishvananda/netlink
+  version: v1.0.0
+- package: gopkg.in/gcfg.v1
+  version: v1.2.3
+- package: k8s.io/api
+  subpackages:
+  - apps/v1
+  - core/v1
+  - extensions/v1beta1
+  - networking/v1
+- package: k8s.io/apimachinery
+  subpackages:
+  - pkg/api/errors
+  - pkg/api/resource
+  - pkg/apis/meta/v1
+  - pkg/labels
+  - pkg/types
+  - pkg/util/errors
+  - pkg/util/rand
+  - pkg/util/runtime
+  - pkg/util/wait
+- package: k8s.io/client-go
+  version: v11.0.0
+  subpackages:
+  - informers
+  - kubernetes
+  - kubernetes/scheme
+  - kubernetes/typed/core/v1
+  - listers/core/v1
+  - rest
+  - tools/cache
+  - tools/clientcmd
+  - tools/leaderelection
+  - tools/leaderelection/resourcelock
+  - tools/record
+  - util/cert
+  - util/workqueue
+- package: k8s.io/klog
+  version: v0.3.0
+- package: k8s.io/sample-controller
+  subpackages:
+  - pkg/signals
+- package: k8s.io/utils
+  subpackages:
+  - exec

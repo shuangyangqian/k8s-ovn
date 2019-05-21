@@ -1,0 +1,347 @@
+---
+- name: Kubernetes Master | register kube-apiserver
+  blockinfile:
+    path: /etc/systemd/system/kube-apiserver.service
+    create: yes
+    block: |
+      [Unit]
+      Description=Kubernetes API Server
+      Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+      [Service]
+      ExecStart=/usr/bin/kube-apiserver \
+        --bind-address=0.0.0.0 \
+        --service-cluster-ip-range={{ kubernetes_cluster_info.SERVICE_CLUSTER_IP_RANGE }} \
+        --address=0.0.0.0 \
+        --etcd-servers=http://127.0.0.1:2379 \
+        --v=2 \
+        --insecure-bind-address={{ host_public_ip }} \
+        --allow-privileged=true \
+        --anonymous-auth=false \
+        --secure-port=443 \
+        --advertise-address={{ host_internal_ip }} \
+        --admission-control=NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,ResourceQuota \
+        --tls-cert-file=/etc/kubernetes/tls/apiserver.pem \
+        --tls-private-key-file=/etc/kubernetes/tls/apiserver-key.pem \
+        --client-ca-file=/etc/kubernetes/tls/ca.pem \
+        --service-account-key-file=/etc/kubernetes/tls/apiserver-key.pem \
+        --runtime-config=extensions/v1beta1=true,extensions/v1beta1/networkpolicies=true,batch/v2alpha1=true
+      Restart=on-failure
+      RestartSec=10
+      WorkingDirectory=/root/
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Kubernetes Master | register kube-controller-manager
+  blockinfile:
+    path: /etc/systemd/system/kube-controller-manager.service
+    create: yes
+    block: |
+      [Unit]
+      Description=Kubernetes Controller Manager
+      Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+      [Service]
+      ExecStart=/usr/bin/kube-controller-manager \
+        --master={{ host_public_ip }}:8080 \
+        --v=2 \
+        --cluster-cidr={{ kubernetes_cluster_info.CLUSTER_SUBNET }} \
+        --service-account-private-key-file=/etc/kubernetes/tls/apiserver-key.pem \
+        --root-ca-file=/etc/kubernetes/tls/ca.pem \
+        --cluster-signing-cert-file=/etc/kubernetes/tls/ca.pem \
+        --cluster-signing-key-file=/etc/kubernetes/tls/ca-key.pem \
+        --insecure-experimental-approve-all-kubelet-csrs-for-group=system:kubelet-bootstrap
+      Restart=on-failure
+      RestartSec=10
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Kubernetes Master | register kube-scheduler
+  blockinfile:
+    path: /etc/systemd/system/kube-scheduler.service
+    create: yes
+    block: |
+      [Unit]
+      Description=Kubernetes Scheduler
+      Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+      [Service]
+      ExecStart=/usr/bin/kube-scheduler \
+        --master={{ host_public_ip }}:8080 \
+        --v=2 \
+        --leader-elect=true
+      Restart=on-failure
+      RestartSec=10
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Kubernetes Master | register etcd3
+  blockinfile:
+    path: /etc/systemd/system/etcd3.service
+    create: yes
+    block: |
+      [Unit]
+      Description=Etcd store
+      Documentation=https://github.com/coreos/etcd
+      [Service]
+      ExecStartPre=-/usr/bin/docker rm -f etcd
+      ExecStart=/usr/bin/docker run --name etcd \
+        --net=host \
+        --volume /var/etcd:/var/etcd \
+        quay.io/coreos/etcd:v{{ kubernetes_cluster_info.ETCD_VERSION }} \
+          /usr/local/bin/etcd \
+          --data-dir /var/etcd/data
+      Restart=on-failure
+      RestartSec=10
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Kubernetes Master | Checking certs
+  stat:
+    path: /etc/kubernetes/tls/admin.pem
+  register: certs_check
+
+- name: Kubernetes Master | Setting certs generated to false
+  set_fact:
+    certs_generated: false
+
+- name: Kubernetes Master | Generate certs
+  block:
+    - include_tasks: ./generate_certs_master.yml
+    - set_fact:
+        certs_generated: true
+  when: not certs_check.stat.exists
+
+- name: Kubernetes Master | Fetching certificates on the ansible host
+  fetch:
+    flat: yes
+    src: /etc/kubernetes/tls/{{item}}
+    dest: "{{ansible_tmp_dir}}/k8s_{{item}}"
+  with_items:
+    - ca.pem
+    - ca-key.pem
+
+- name: Kubernetes Master | restart all services
+  service:
+    name: "{{item}}"
+    enabled: yes
+    state: restarted
+    daemon_reload: yes
+  with_items:
+    - etcd3
+    - kube-apiserver
+    - kube-controller-manager
+    - kube-scheduler
+  changed_when: false
+
+- name: Kubernetes Master | Setting kubectl context
+  shell: |
+    kubectl config set-cluster default-cluster --server=https://{{ host_public_ip }} --certificate-authority=/etc/kubernetes/tls/ca.pem
+    kubectl config set-credentials default-admin --certificate-authority=/etc/kubernetes/tls/ca.pem --client-key=/etc/kubernetes/tls/admin-key.pem --client-certificate=/etc/kubernetes/tls/admin.pem
+    kubectl config set-context local --cluster=default-cluster --user=default-admin
+    kubectl config use-context local
+  changed_when: false
+
+- name: Kubernetes Master | Waiting for kube-apiserver to start
+  block:
+    - name: Kubernetes Master | Running kubectl version
+      shell: kubectl version
+      changed_when: false
+      register: kubeapiserver_ready
+      until: kubeapiserver_ready.rc == 0
+      retries: 30
+      delay: 3
+  rescue:
+    - fail:
+        msg: Kubernetes API server could not reach ready status, check the service log
+
+- name: Kubernetes Master | Fetch Token
+  shell: kubectl describe secret $(kubectl get secrets | grep default | cut -f1 -d ' ') | grep -E '^token' | cut -f2 -d':' | tr -d '\t'
+  changed_when: false
+  register: fetch_token
+  until: fetch_token.stdout | trim != ""
+  retries: 10
+  delay: 3
+
+- name: Kubernetes Master | Register Token
+  set_fact:
+    TOKEN: "{{fetch_token.stdout | trim}}"
+
+- name: Kubernetes Master | Checking Token
+  fail:
+      msg: Could not fetch Token, make sure kubectl can connect to the API server
+  when: TOKEN == ""
+
+- name: Kubernetes Master | Create service OVN Kube
+  blockinfile:
+    path: /etc/systemd/system/ovn-k8s-watcher.service
+    create: yes
+    block: |
+      [Unit]
+      Description=OVN watches the Kubernetes API
+      Documentation=https://github.com/openvswitch/ovn-kubernetes#watchers-on-master-node
+      [Service]
+      ExecStart=/usr/bin/ovnkube \
+        -init-master "{{ ansible_hostname }}" \
+        -cluster-subnet "{{ kubernetes_cluster_info.CLUSTER_SUBNET }}" \
+        -service-cluster-ip-range "{{ kubernetes_cluster_info.SERVICE_CLUSTER_IP_RANGE }}" \
+        -nodeport \
+        -net-controller \
+        -k8s-token {{TOKEN}} \
+        -k8s-cacert /etc/openvswitch/k8s-ca.crt \
+        -k8s-apiserver "https://{{ host_public_ip }}" \
+        -nb-address tcp://127.0.0.1:6641 \
+        -sb-address tcp://127.0.0.1:6642
+      Restart=on-failure
+      RestartSec=10
+      WorkingDirectory=/root/
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Kubernetes Master | Ensure /etc/hosts is updated
+  lineinfile:
+    path: /etc/hosts
+    line: "{{ host_public_ip }} {{ ansible_hostname }}"
+
+- name: Kubernetes Master | Enabling OVN to listen on 6641 and 6642
+  shell: |
+    ovn-nbctl set-connection ptcp:6641
+    ovn-sbctl set-connection ptcp:6642
+  changed_when: false
+
+- name: Kubernetes Master | Setting OVN external_ids
+  shell: |
+    ovs-vsctl set Open_vSwitch . external_ids:ovn-remote="tcp:{{ host_public_ip }}:6642" \
+      external_ids:ovn-nb="tcp:{{ host_public_ip }}:6641" \
+      external_ids:ovn-encap-ip="{{ host_internal_ip }}" \
+      external_ids:ovn-encap-type="geneve"
+  changed_when: false
+
+# TODO: enable this for future GCE support in the playbooks
+# - name: Kubernetes Master | Setting OVN external_ids when GCE
+#   shell: |
+#     ovs-vsctl set Open_vSwitch . external_ids:ovn-encap-ip="{{ host_public_ip }}"
+#   when: GCE
+
+- name: Kubernetes Master | Prepare OVN certs
+  shell: |
+    ovs-vsctl set Open_vSwitch . \
+      external_ids:k8s-api-server="https://{{ host_public_ip }}" \
+      external_ids:k8s-api-token="{{TOKEN}}"
+
+    ln -fs /etc/kubernetes/tls/ca.pem /etc/openvswitch/k8s-ca.crt
+  changed_when: false
+
+- name: Kubernetes Master | restart ovn-k8s-watcher
+  service:
+    name: "ovn-k8s-watcher"
+    enabled: yes
+    state: restarted
+    daemon_reload: yes
+  changed_when: false
+
+- name: Kubernetes Master | Create test yamls
+  blockinfile:
+    path: /root/apache-pod.yaml
+    create: yes
+    marker: "# {mark} Ansible automatic example generation"
+    block: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: apachetwin
+        labels:
+          name: webserver
+      spec:
+        containers:
+        - name: apachetwin
+          image: fedora/apache
+        nodeSelector:
+          beta.kubernetes.io/os: linux
+- name: Create test yamls
+  blockinfile:
+    path: /root/apache-e-w.yaml
+    create: yes
+    marker: "# {mark} Ansible automatic example generation"
+    block: |
+      apiVersion: v1
+      kind: Service
+      metadata:
+        labels:
+          name: apacheservice
+          role: service
+        name: apacheservice
+      spec:
+        ports:
+          - port: 8800
+            targetPort: 80
+            protocol: TCP
+            name: tcp
+        selector:
+          name: webserver
+- name: Create test yamls
+  blockinfile:
+    path: /root/apache-n-s.yaml
+    create: yes
+    marker: "# {mark} Ansible automatic example generation"
+    block: |
+      apiVersion: v1
+      kind: Service
+      metadata:
+        labels:
+          name: apacheexternal
+          role: service
+        name: apacheexternal
+      spec:
+        ports:
+          - port: 8800
+            targetPort: 80
+            protocol: TCP
+            name: tcp
+        selector:
+          name: webserver
+        type: NodePort
+- name: Create test yamls
+  blockinfile:
+    path: /root/nginx-pod.yaml
+    create: yes
+    marker: "# {mark} Ansible automatic example generation"
+    block: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: nginxtwin
+        labels:
+          name: webserver
+      spec:
+        containers:
+        - name: nginxtwin
+          image: nginx
+        nodeSelector:
+          beta.kubernetes.io/os: linux
+- name: Create test yamls
+  blockinfile:
+    path: /root/nano-pod-{{item}}.yaml
+    create: yes
+    marker: "# {mark} Ansible automatic example generation"
+    block: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: nano-{{item}}
+        labels:
+          name: webserver
+      spec:
+        containers:
+        - name: nano
+          image: ovnkubernetes/pause
+          imagePullPolicy: IfNotPresent
+        # This test yaml uses a custom nanoserver container that starts a simple
+        # http server that can be used for tests. It's much faster compared to the
+        # IIS container.
+        - name: nano2
+          image: alinbalutoiu/nanoserver-web:{{item}}
+          imagePullPolicy: IfNotPresent
+        nodeSelector:
+          beta.kubernetes.io/os: windows
+          # kubernetes.io/hostname: windows_{{item}}_hostname
+  with_items:
+    - 1709
+    - 1803

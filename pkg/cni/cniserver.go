@@ -10,7 +10,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
 
-	"github.com/openvswitch/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/shuangyangqian/k8s-ovn/pkg/config"
 )
 
 // *** The Server is PRIVATE API between OVN components and may be
