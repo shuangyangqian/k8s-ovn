@@ -3,7 +3,7 @@ import:
 - package: github.com/Sirupsen/logrus
   version: v1.4.2
 - package: github.com/containernetworking/cni
-  version: v0.7.0
+  version: v0.6.0
   subpackages:
   - pkg/skel
   - pkg/types
